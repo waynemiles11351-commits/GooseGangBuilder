@@ -1,0 +1,74 @@
+name: Build IPA
+
+on:
+  workflow_dispatch:
+  push:
+    branches: [main]
+
+jobs:
+  build:
+    runs-on: macos-14
+    steps:
+      - name: Checkout code
+        uses: actions/checkout@v4
+
+      - name: Unzip project bundle
+        run: |
+          COUNT=$(ls *.zip 2>/dev/null | wc -l | tr -d ' ')
+          if [ "$COUNT" -gt 1 ]; then
+            echo "ERROR:仓库存在多个zip，请只保留 GooseGang-v11.1.zip"
+            exit 1
+          fi
+          unzip -q *.zip -d project
+
+      - name: Verify bundle is the latest version
+        working-directory: project
+        run: |
+          echo "===== 上传包指纹 ====="
+          cat VERSION.txt 2>/dev/null || echo "!!! 缺少VERSION.txt（旧包）"
+          echo "----------------------"
+          echo -n "工程格式: "; grep -q 'objectVersion = 56' ios/GooseGang.xcodeproj/project.pbxproj && echo "objectVersion = 56 (OK)" || echo "工程版本错误"
+          echo -n "App标记:   "; grep -q 'GooseGangPackageVersion' ios/GooseGang/Info.plist && echo "v11.1标记存在 (OK)" || echo "标记缺失"
+          echo "======================"
+          if [ -f VERSION.txt ] \
+             && grep -q 'v11.1' VERSION.txt \
+             && grep -q 'objectVersion = 56' ios/GooseGang.xcodeproj/project.pbxproj \
+             && grep -q 'v11.1-20260924' ios/GooseGang/Info.plist; then
+            echo "BUNDLE OK: 确认是 v11.1 最新项目包"
+          else
+            echo "=========================================="
+            echo "ERROR：上传包不是v11.1版本，请删除旧zip，重新下载上传新包"
+            echo "=========================================="
+            exit 1
+          fi
+
+      - name: Build app (unsigned)
+        working-directory: project/ios
+        run: |
+          xcodebuild \
+            -project GooseGang.xcodeproj \
+            -target GooseGang \
+            -configuration Release \
+            -sdk iphoneos \
+            -derivedDataPath build \
+            CODE_SIGNING_ALLOWED=NO \
+            build
+
+      - name: Package IPA
+        working-directory: project/ios
+        run: |
+          APP="build/Build/Products/Release-iphoneos/GooseGang.app"
+          test -d "$APP"
+          rm -rf ipa_stage
+          mkdir -p ipa_stage/Payload
+          cp -R "$APP" ipa_stage/Payload/
+          cd ipa_stage && zip -qry ../GooseGang.ipa Payload
+          cd .. && rm -rf ipa_stage
+          ls -lh GooseGang.ipa
+
+      - name: Upload IPA artifact
+        uses: actions/upload-artifact@v4
+        with:
+          name: GooseGang-ipa
+          path: project/ios/GooseGang.ipa
+          if-no-files-found: error
