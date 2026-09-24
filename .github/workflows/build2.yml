@@ -1,0 +1,81 @@
+# ============================================================
+# 手机友好版：GitHub Actions 云构建 ipa（v11.2 FINAL）
+# 新建这个文件即可生效，旧 build-ipa.yml 不用管。
+# ============================================================
+name: Build IPA FINAL
+
+on:
+  workflow_dispatch:
+  push:
+    branches: [main]
+
+jobs:
+  build:
+    runs-on: macos-14
+    steps:
+      - name: Checkout code
+        uses: actions/checkout@v4
+
+      - name: Unzip project bundle
+        run: |
+          COUNT=$(ls *.zip 2>/dev/null | wc -l | tr -d ' ')
+          if [ "$COUNT" -gt 1 ]; then
+            echo "ERROR: 仓库里有 $COUNT 个 zip 文件！请删除旧 zip，只保留 GooseGang-v11.zip"
+            exit 1
+          fi
+          unzip -q *.zip -d project
+
+      - name: Verify bundle is the latest version
+        working-directory: project
+        run: |
+          echo "===== 上传包指纹 ====="
+          cat VERSION.txt 2>/dev/null || echo "!!! 缺少 VERSION.txt（旧包特征）"
+          echo "----------------------"
+          echo -n "工程格式: "; grep -q 'objectVersion = 56' ios/GooseGang.xcodeproj/project.pbxproj && echo "objectVersion = 56 (OK)" || echo "未找到 56 → 旧包"
+          echo -n "App标记:   "; grep -q 'GooseGangPackageVersion' ios/GooseGang/Info.plist && echo "v11 标记存在 (OK)" || echo "缺失 → 旧包"
+          echo "======================"
+          if [ -f VERSION.txt ] \
+             && grep -q 'v11.1' VERSION.txt \
+             && grep -q 'objectVersion = 56' ios/GooseGang.xcodeproj/project.pbxproj \
+             && grep -q 'v11.1-20260924' ios/GooseGang/Info.plist; then
+            echo "BUNDLE OK: 已确认是 v11.1 最新版项目包"
+          else
+            echo "=========================================="
+            echo "ERROR: 上传的不是最新版 (v11.1)！请删除旧 zip 后重新下载上传"
+            echo "=========================================="
+            exit 1
+          fi
+
+      - name: Build app (unsigned)
+        working-directory: project/ios
+        run: |
+          xcodebuild \
+            -project GooseGang.xcodeproj \
+            -target GooseGang \
+            -configuration Release \
+            -sdk iphoneos \
+            CODE_SIGNING_ALLOWED=NO \
+            build
+
+      - name: Package IPA
+        working-directory: project/ios
+        run: |
+          APP=""
+          for cand in build/Release-iphoneos/GooseGang.app build/Build/Products/Release-iphoneos/GooseGang.app; do
+            if [ -d "$cand" ]; then APP="$cand"; break; fi
+          done
+          test -n "$APP" || { echo "ERROR: 未找到编译产物 GooseGang.app"; exit 1; }
+          echo "使用产物: $APP"
+          rm -rf ipa_stage
+          mkdir -p ipa_stage/Payload
+          cp -R "$APP" ipa_stage/Payload/
+          cd ipa_stage && zip -qry ../GooseGang.ipa Payload
+          cd .. && rm -rf ipa_stage
+          ls -lh GooseGang.ipa
+
+      - name: Upload IPA artifact
+        uses: actions/upload-artifact@v4
+        with:
+          name: GooseGang-ipa
+          path: project/ios/GooseGang.ipa
+          if-no-files-found: error
